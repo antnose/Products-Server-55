@@ -3,11 +3,61 @@ const express = require("express");
 const cors = require("cors");
 const app = express();
 require("dotenv").config();
+const admin = require("firebase-admin");
 const port = process.env.port || 3001;
+
+const serviceAccount = require("./smartdeals-firebase-adminkey.json");
+
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount),
+});
 
 // All middleware here
 app.use(cors());
 app.use(express.json());
+
+const logger = (req, res, next) => {
+  console.log("Logging info");
+  next();
+};
+
+// Verify firebase token
+// const verifyFireBaseToken = (req, res, next) => {
+//   if (!req.headers.authorization) {
+//     // Do not allow to go
+//     return res.status(401).send({ message: "Unauthorized Access" });
+//   }
+//   const token = req.headers.authorization.split(" ")[1];
+//   if (!token) {
+//     return res.status(401).send({ message: "Unauthorized access" });
+//   }
+
+//   // verify token
+
+//   next();
+// };
+
+// Verify Firebase Token Recap
+const verifyFireBaseToken = async (req, res, next) => {
+  if (!req.headers.authorization) {
+    return res.status(401).send({ message: "Unauthorized access" });
+  }
+
+  const token = req.headers.authorization.split(" ")[1];
+  if (!token) {
+    return res.status(401).send({ message: "Unauthorized access" });
+  }
+
+  // Verify id token
+  try {
+    const userInfo = await admin.auth().verifyIdToken(token);
+    req.token_email = userInfo.email;
+    console.log("After token validation", userInfo);
+    next();
+  } catch (error) {
+    return res.status(401).send({ message: "Unauthorized access!" });
+  }
+};
 
 const uri = `mongodb+srv://${process.env.DB_USER_NAME}:${process.env.DB_PASS}@cluster0.to58y.mongodb.net/?appName=Cluster0`;
 
@@ -43,10 +93,18 @@ async function run() {
       res.send(result);
     });
 
+    // Get Recent Products
+    app.get("/latest-products", async (req, res) => {
+      const cursor = productCollection.find().sort({ created_at: -1 }).limit(6);
+      const result = await cursor.toArray();
+      res.send(result);
+    });
+
     // Get Specific data
     app.get("/products/:id", async (req, res) => {
       const id = req.params.id;
-      const query = { _id: new ObjectId(id) };
+      console.log(id);
+      const query = { _id: id };
       const result = await productCollection.findOne(query);
       res.send(result);
     });
@@ -83,11 +141,12 @@ async function run() {
     });
 
     // -----------> Bids Related Apis <----------- \\
-    // Create a bid
-    app.get("/bids", async (req, res) => {
-      const email = req.query.email;
+
+    // Get All bids
+    app.get("/bids", verifyFireBaseToken, async (req, res) => {
+      console.log("Headers", req.headers);
       const query = {};
-      if (email) {
+      if (query.email) {
         query.buyer_email = email;
       }
       const cursor = bidsCollection.find(query);
@@ -95,18 +154,65 @@ async function run() {
       res.send(result);
     });
 
-    // Post a bid
-    app.post("/bids", async (req, res) => {
-      const newBid = req.body;
-      const email = req.body.email;
-      const query = { email: email };
-      const existingUser = await usersCollection.findOne(query);
-      if (existingUser) {
-        res.send({ message: "User already exist" });
-      } else {
-        const result = await bidsCollection.insertOne(newBid);
+    // Get a bid
+    // app.get("/bids", async (req, res) => {
+    //   const email = req.query.email;
+    //   const query = {};
+    //   if (email) {
+    //     query.buyer_email = email;
+    //   }
+    //   const cursor = bidsCollection.find(query);
+    //   const result = await cursor.toArray();
+    //   res.send(result);
+    // });
+
+    // Get specific bid using id
+    app.get(
+      "/products/bids/:productId",
+      verifyFireBaseToken,
+      async (req, res) => {
+        const productId = req.params.productId;
+        const query = { productId: productId };
+        const cursor = bidsCollection.find(query).sort({ bid_pirce: -1 });
+        const result = await cursor.toArray();
         res.send(result);
       }
+    );
+
+    // Post a bid
+    // app.post("/bids", async (req, res) => {
+    //   const newBid = req.body;
+    //   const email = req.body.email;
+    //   const query = { email: email };
+    //   const existingUser = await usersCollection.findOne(query);
+    //   if (existingUser) {
+    //     res.send({ message: "User already exist" });
+    //   } else {
+    //     const result = await bidsCollection.insertOne(newBid);
+    //     res.send(result);
+    //   }
+    // });
+
+    app.post("/bids", async (req, res) => {
+      const newBid = req.body;
+      const email = req.query.email;
+      const query = {};
+      if (email) {
+        if (email !== req.token_email) {
+          return res.status(403).send({ message: "Forbidden access" });
+        }
+        query.buyer_email = email;
+      }
+      const result = await bidsCollection.insertOne(newBid);
+
+      res.send(result);
+    });
+
+    app.delete("/bids/:id", async (req, res) => {
+      const id = req.params.id;
+      const query = { _id: new ObjectId(id) };
+      const result = await bidsCollection.deleteOne(query);
+      res.send(result);
     });
 
     // -----------> Users Related Apis <----------- \\
@@ -121,6 +227,14 @@ async function run() {
     // get all users
     app.get("/users", async (req, res) => {
       const result = await usersCollection.find().toArray();
+      res.send(result);
+    });
+
+    // Get specific user
+    app.get("/users/:id", async (req, res) => {
+      const id = req.params.id;
+      const query = { _id: new ObjectId(id) };
+      const result = await usersCollection.findOne(query);
       res.send(result);
     });
 
